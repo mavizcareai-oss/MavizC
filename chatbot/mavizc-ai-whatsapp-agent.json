@@ -1,0 +1,261 @@
+{
+  "name": "MavizC.Ai - WhatsApp AI Assistant",
+  "nodes": [
+    {
+      "parameters": { "updates": ["messages"] },
+      "name": "WhatsApp Trigger",
+      "type": "n8n-nodes-base.whatsAppTrigger",
+      "typeVersion": 1,
+      "position": [240, 340],
+      "webhookId": "mavizc-ai-whatsapp-webhook",
+      "credentials": { "whatsAppTriggerApi": { "id": "1", "name": "MavizC.Ai WhatsApp API" } }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "name": "phoneNumber", "value": "={{ $json.messages[0].from }}", "type": "string" },
+            { "name": "messageType", "value": "={{ $json.messages[0].type }}", "type": "string" },
+            { "name": "textContent", "value": "={{ $json.messages[0].text?.body }}", "type": "string" },
+            { "name": "audioId", "value": "={{ $json.messages[0].audio?.id }}", "type": "string" },
+            { "name": "patientName", "value": "={{ $json.contacts[0].profile.name }}", "type": "string" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Extract Message Data",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [460, 340]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.messageType }}", "rightValue": "audio", "operator": { "type": "string", "operation": "equals" } }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Voice or Text?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 340]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://graph.facebook.com/v19.0/{{ $json.audioId }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "name": "Get Media URL",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 180],
+      "credentials": { "httpHeaderAuth": { "id": "4", "name": "WhatsApp Graph API Token" } }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": { "response": { "response": { "responseFormat": "file" } } }
+      },
+      "name": "Download Audio File",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 180],
+      "credentials": { "httpHeaderAuth": { "id": "4", "name": "WhatsApp Graph API Token" } }
+    },
+    {
+      "parameters": { "resource": "audio", "operation": "transcribe", "options": {} },
+      "name": "Voice to Text (Whisper)",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.3,
+      "position": [1340, 180],
+      "credentials": { "openAiApi": { "id": "2", "name": "OpenAI account" } }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "name": "userMessage", "value": "={{ $json.text }}", "type": "string" },
+            { "name": "phoneNumber", "value": "={{ $('Extract Message Data').item.json.phoneNumber }}", "type": "string" },
+            { "name": "patientName", "value": "={{ $('Extract Message Data').item.json.patientName }}", "type": "string" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Set Voice Message",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1560, 180]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "name": "userMessage", "value": "={{ $json.textContent }}", "type": "string" },
+            { "name": "phoneNumber", "value": "={{ $json.phoneNumber }}", "type": "string" },
+            { "name": "patientName", "value": "={{ $json.patientName }}", "type": "string" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Set Text Message",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [900, 500]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "name": "userMessage", "value": "={{ $json.userMessage }}", "type": "string" },
+            { "name": "phoneNumber", "value": "={{ $json.phoneNumber }}", "type": "string" },
+            { "name": "patientName", "value": "={{ $json.patientName }}", "type": "string" },
+            { "name": "hospitalId", "value": "11111111-1111-1111-1111-111111111111", "type": "string" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Prepare Agent Input",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1780, 340],
+      "notes": "hospitalId is hardcoded for a single-hospital deployment (matches seed.sql). Replace with the real hospitals.id from your Supabase table, or extend this node to look it up per WhatsApp business number if you support multiple hospitals."
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.userMessage }}",
+        "options": {
+          "systemMessage": "=You are MavizC.Ai, a bilingual (Tamil & English) hospital appointment assistant on WhatsApp. Patient name: {{ $json.patientName }}. Phone: {{ $json.phoneNumber }}. Hospital ID: {{ $json.hospitalId }}.\n\nFollow this exact process for every booking:\n1. Call 'Find or Create Patient' first with the patient's name and detected preferred language (english or tamil) — this returns their patient_id. Always do this before booking, even if you already know their name.\n2. Call 'Check Doctor Availability' with the specialty or symptom the patient mentioned, to get a list of doctors and their available_slots (each slot has a date and time).\n3. Confirm with the patient which doctor, date, and time they want, in their own language.\n4. Call 'Book Appointment' using the patient_id from step 1, the chosen doctor_id from step 2, and the confirmed date/time.\n5. Call 'Mark Slot Booked' with the same doctor_id, date, and time so it isn't offered to another patient.\n6. Confirm the final booking back to the patient clearly: hospital, doctor, date, time.\n\nKeep replies short and warm — this is a WhatsApp chat, not an essay. If no slots match, say so and offer the closest alternative specialty or date."
+        }
+      },
+      "name": "MavizC.Ai AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [2000, 340]
+    },
+    {
+      "parameters": { "model": { "value": "gpt-4o", "mode": "list" }, "options": {} },
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [1880, 560],
+      "credentials": { "openAiApi": { "id": "2", "name": "OpenAI account" } }
+    },
+    {
+      "parameters": {
+        "sessionKey": "={{ $json.phoneNumber }}",
+        "sessionIdType": "customKey",
+        "tableName": "chat_memory"
+      },
+      "name": "Postgres Chat Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryPostgresChat",
+      "typeVersion": 1.3,
+      "position": [2010, 560],
+      "credentials": { "postgres": { "id": "3", "name": "MavizC.Ai Supabase" } }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO patients (name, phone_number, preferred_language)\nVALUES ($1, $2, $3)\nON CONFLICT (phone_number)\nDO UPDATE SET name = EXCLUDED.name, preferred_language = EXCLUDED.preferred_language\nRETURNING id, name, phone_number, preferred_language;",
+        "options": {
+          "queryReplacement": "={{ $('Prepare Agent Input').item.json.patientName }},={{ $('Prepare Agent Input').item.json.phoneNumber }},={{ $fromAI(\"preferred_language\", \"the patient's preferred language, either 'english' or 'tamil', based on the language they are writing/speaking in\") }}"
+        }
+      },
+      "name": "Find or Create Patient",
+      "type": "@n8n/n8n-nodes-langchain.toolPostgres",
+      "typeVersion": 1,
+      "position": [2140, 560],
+      "credentials": { "postgres": { "id": "3", "name": "MavizC.Ai Supabase" } }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id AS doctor_id, name, specialty, available_slots\nFROM doctors\nWHERE hospital_id = $1 AND specialty ILIKE '%' || $2 || '%';",
+        "options": {
+          "queryReplacement": "={{ $('Prepare Agent Input').item.json.hospitalId }},={{ $fromAI(\"specialty\", \"the medical specialty or symptom the patient mentioned, e.g. 'cardiologist' or 'general physician'\") }}"
+        }
+      },
+      "name": "Check Doctor Availability",
+      "type": "@n8n/n8n-nodes-langchain.toolPostgres",
+      "typeVersion": 1,
+      "position": [2280, 560],
+      "credentials": { "postgres": { "id": "3", "name": "MavizC.Ai Supabase" } }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO appointments (patient_id, doctor_id, hospital_id, appointment_date, appointment_time, status, source)\nVALUES ($1, $2, $3, $4, $5, 'confirmed', 'whatsapp')\nRETURNING id, appointment_date, appointment_time;",
+        "options": {
+          "queryReplacement": "={{ $fromAI(\"patient_id\", \"the patient_id returned by Find or Create Patient\") }},={{ $fromAI(\"doctor_id\", \"the doctor_id chosen from Check Doctor Availability\") }},={{ $('Prepare Agent Input').item.json.hospitalId }},={{ $fromAI(\"appointment_date\", \"YYYY-MM-DD\") }},={{ $fromAI(\"appointment_time\", \"HH:MM 24-hour\") }}"
+        }
+      },
+      "name": "Book Appointment",
+      "type": "@n8n/n8n-nodes-langchain.toolPostgres",
+      "typeVersion": 1,
+      "position": [2420, 560],
+      "credentials": { "postgres": { "id": "3", "name": "MavizC.Ai Supabase" } }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE doctors\nSET available_slots = (\n  SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)\n  FROM jsonb_array_elements(available_slots) elem\n  WHERE NOT (elem->>'date' = $2 AND elem->>'time' = $3)\n)\nWHERE id = $1;",
+        "options": {
+          "queryReplacement": "={{ $fromAI(\"doctor_id\", \"the doctor_id that was just booked\") }},={{ $fromAI(\"appointment_date\", \"YYYY-MM-DD, the date that was just booked\") }},={{ $fromAI(\"appointment_time\", \"HH:MM, the time that was just booked\") }}"
+        }
+      },
+      "name": "Mark Slot Booked",
+      "type": "@n8n/n8n-nodes-langchain.toolPostgres",
+      "typeVersion": 1,
+      "position": [2560, 560],
+      "credentials": { "postgres": { "id": "3", "name": "MavizC.Ai Supabase" } }
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "phoneNumberId": "YOUR_WHATSAPP_PHONE_NUMBER_ID",
+        "recipientPhoneNumber": "={{ $('Prepare Agent Input').item.json.phoneNumber }}",
+        "textBody": "={{ $json.output }}"
+      },
+      "name": "Send WhatsApp Reply",
+      "type": "n8n-nodes-base.whatsApp",
+      "typeVersion": 1,
+      "position": [2240, 340],
+      "credentials": { "whatsAppApi": { "id": "1", "name": "MavizC.Ai WhatsApp API" } }
+    }
+  ],
+  "connections": {
+    "WhatsApp Trigger": { "main": [[{ "node": "Extract Message Data", "type": "main", "index": 0 }]] },
+    "Extract Message Data": { "main": [[{ "node": "Voice or Text?", "type": "main", "index": 0 }]] },
+    "Voice or Text?": {
+      "main": [
+        [{ "node": "Get Media URL", "type": "main", "index": 0 }],
+        [{ "node": "Set Text Message", "type": "main", "index": 0 }]
+      ]
+    },
+    "Get Media URL": { "main": [[{ "node": "Download Audio File", "type": "main", "index": 0 }]] },
+    "Download Audio File": { "main": [[{ "node": "Voice to Text (Whisper)", "type": "main", "index": 0 }]] },
+    "Voice to Text (Whisper)": { "main": [[{ "node": "Set Voice Message", "type": "main", "index": 0 }]] },
+    "Set Voice Message": { "main": [[{ "node": "Prepare Agent Input", "type": "main", "index": 0 }]] },
+    "Set Text Message": { "main": [[{ "node": "Prepare Agent Input", "type": "main", "index": 0 }]] },
+    "Prepare Agent Input": { "main": [[{ "node": "MavizC.Ai AI Agent", "type": "main", "index": 0 }]] },
+    "OpenAI Chat Model": { "ai_languageModel": [[{ "node": "MavizC.Ai AI Agent", "type": "ai_languageModel", "index": 0 }]] },
+    "Postgres Chat Memory": { "ai_memory": [[{ "node": "MavizC.Ai AI Agent", "type": "ai_memory", "index": 0 }]] },
+    "Find or Create Patient": { "ai_tool": [[{ "node": "MavizC.Ai AI Agent", "type": "ai_tool", "index": 0 }]] },
+    "Check Doctor Availability": { "ai_tool": [[{ "node": "MavizC.Ai AI Agent", "type": "ai_tool", "index": 0 }]] },
+    "Book Appointment": { "ai_tool": [[{ "node": "MavizC.Ai AI Agent", "type": "ai_tool", "index": 0 }]] },
+    "Mark Slot Booked": { "ai_tool": [[{ "node": "MavizC.Ai AI Agent", "type": "ai_tool", "index": 0 }]] },
+    "MavizC.Ai AI Agent": { "main": [[{ "node": "Send WhatsApp Reply", "type": "main", "index": 0 }]] }
+  },
+  "pinData": {},
+  "settings": { "executionOrder": "v1" }
+}
